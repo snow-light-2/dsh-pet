@@ -137,11 +137,20 @@ class PetSprite {
     this.hit.title = this.pet.name;
     this.bubble = document.createElement('div');
     this.bubble.className = 'pet-bubble';
+    // 右上角小箭头：Harness 菜单入口（连接手机/重启/安全模式/日志/检查更新/打开网站/隐藏桌宠…）。
+    // 与身体命中区同样参与穿透判定（onMouseMove），否则点在箭头上会被透传到下层应用。
+    this.arrow = document.createElement('div');
+    this.arrow.className = 'pet-arrow';
+    this.arrow.title = 'Harness 菜单';
+    this.arrow.textContent = '▾';
+    // 隐藏状态：只隐藏宠物本体，箭头保留作为恢复入口（与 pet:set-hidden 的主进程登记配合）
+    this.hidden = false;
 
     stage.appendChild(this.videoA);
     stage.appendChild(this.videoB);
     stage.appendChild(this.hit);
     this.el.appendChild(this.bubble);
+    this.el.appendChild(this.arrow);
     this.el.appendChild(stage);
     rootEl.appendChild(this.el);
     this.position();
@@ -153,6 +162,17 @@ class PetSprite {
     this.hit.addEventListener('pointermove', (e) => this.onPointerMove(e), { signal: ac.signal });
     this.hit.addEventListener('click', () => this.onClick(), { signal: ac.signal });
     this.hit.addEventListener('contextmenu', (e) => this.onContextMenu(e), { signal: ac.signal });
+    // 箭头：左键/右键都打开 Harness 菜单（右键沿用同一入口，便于习惯右键的用法）
+    this.arrow.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.openHarnessMenu();
+    });
+    this.arrow.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.openHarnessMenu();
+    });
     window.addEventListener('pointerup', (e) => this.onPointerUp(e), { signal: ac.signal });
     window.addEventListener('pointercancel', (e) => this.onPointerUp(e), { signal: ac.signal });
     this.hit.addEventListener('lostpointercapture', (e) => this.onPointerUp(e), { signal: ac.signal });
@@ -817,7 +837,22 @@ class PetSprite {
     const wy = Number.isFinite(e.clientY) ? e.clientY : e.screenY - (this.pos.y - this.margin.t);
     const px = wx - this.margin.l;
     const py = wy - this.margin.t;
-    this.setInteractive(px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h);
+    // 命中区 = 宠物身体 ∪ 右上角箭头（箭头是常驻入口，隐藏宠物后仍可点）
+    const overBody = px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+    this.setInteractive(overBody || this.isOverArrow(px, py));
+  }
+
+  /** 指针是否落在右上角箭头按钮上（sprite 坐标） */
+  isOverArrow(px, py) {
+    if (!this.arrow) return false;
+    const a = this.arrowSize();
+    return px >= a.x && px <= a.x + a.w && py >= a.y && py <= a.y + a.h;
+  }
+
+  /** 箭头按钮在 sprite 坐标系里的矩形（与 index.html 的 CSS 定位保持同源常量） */
+  arrowSize() {
+    const s = Number(this.size) || 462;
+    return { x: s - s * 0.1, y: -s * 0.13, w: s * 0.1, h: s * 0.1 };
   }
 
   onClick() {
@@ -908,6 +943,59 @@ class PetSprite {
       return;
     }
     this.playOnce(leaf.anim);
+  }
+
+  /**
+   * 右上角箭头的动作分发：菜单项由主进程用**原生 Electron 菜单**弹出
+   * （原生菜单不会被宠物小窗裁切，也能用系统样式与快捷键）。
+   */
+  openHarnessMenu() {
+    this.stopMove();
+    if (!window.petBridge || !window.petBridge.openHarnessMenu) return;
+    const d = this.dragState;
+    const rect = this.arrow.getBoundingClientRect();
+    window.__dshPetDebug.harnessMenuRequests = (window.__dshPetDebug.harnessMenuRequests || 0) + 1;
+    window.petBridge.openHarnessMenu({
+      petId: this.pet.id,
+      origin: ORIGIN,
+      hidden: !!this.hidden,
+      dragged: !!(d && (d.active || d.dragging)) || this.justDragged,
+      x: Math.round(rect.left),
+      y: Math.round(rect.bottom),
+    });
+  }
+
+  /**
+   * 隐藏/显示宠物本体：只隐藏宠物本体，箭头常驻作为恢复入口。
+   * 用内联样式直接写目标值（opacity/pointer-events）——Electron 会对所有样式表追加
+   * `* { transition: none !important }`，靠 CSS 类 + transition 的淡出在这里不生效。
+   */
+  setHidden(flag, options) {
+    this.hidden = !!flag;
+    this.el.classList.toggle('is-hidden', this.hidden);
+    // 与 CSS 的 .pet-sprite.is-hidden/.pet-arrow 一起生效；内联保证优先级最高
+    this.stage.style.opacity = this.hidden ? '0' : '';
+    this.stage.style.pointerEvents = this.hidden ? 'none' : '';
+    if (this.arrow) {
+      this.arrow.style.transition = 'none';
+      this.arrow.style.opacity = this.hidden ? '1' : '';
+      void this.arrow.offsetWidth; // 强制一次样式计算，确保下面的 transition 恢复生效
+      this.arrow.style.transition = '';
+    }
+    if (this.hidden) {
+      this.closeMenu();
+      if (!this.chatOpen) this.setInteractive(false);
+    } else {
+      this.setInteractive(false);
+    }
+    if (options && options.persist && window.petBridge && window.petBridge.setHidden) {
+      window.petBridge.setHidden(this.hidden);
+    }
+    return this.hidden;
+  }
+
+  toggleHidden() {
+    return this.setHidden(!this.hidden, { persist: true });
   }
 
   closeMenu() {

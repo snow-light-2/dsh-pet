@@ -2,3 +2,8 @@
 *.log
 .DS_Store
 Thumbs.db
+
+# 本地构建/备份产物（不入库）
+*.bak-*
+*.bak
+*.tgz

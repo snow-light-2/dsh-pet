@@ -277,7 +277,16 @@ export class HelperProcess {
 
     const child = spawn(command, args, {
       cwd: this.options.cwd || packageRoot,
-      env: { ...process.env, ...this.options.env },
+      // DSH 桌面宿主用 ELECTRON_RUN_AS_NODE=1 启动 harness（见 dsh-desktop-host 的 env），
+      // 该变量会被继承到这里；若不清除，Electron 助手会以**纯 Node** 模式启动并在
+      // require('electron') 处崩溃——表现为桌宠窗口永不出现（宿主日志里只有
+      // “desktop helper exited ... restarting”，且系统里没有 electron 进程）。
+      // 必须 delete，不能只赋 undefined：process.env 的取值会被强制转成字符串。
+      env: (() => {
+        const childEnv: NodeJS.ProcessEnv = { ...process.env, ...this.options.env };
+        delete childEnv.ELECTRON_RUN_AS_NODE;
+        return childEnv;
+      })(),
       stdio: ['pipe', 'pipe', 'pipe'], // stdin 也要：bridge 协议响应回写（main.js 请求经 stdout 上来）
       windowsHide: true,
     });

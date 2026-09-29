@@ -111,6 +111,43 @@
         white-space: normal;
         overflow-wrap: anywhere;
       }
+      /* 右上角箭头：Harness 菜单入口（原生菜单由主进程弹出，这里只负责可点区域与视觉）。
+         尺寸/位置与 sprite.js 的 arrowSize() 保持同源常量：x = size*0.9, y = -size*0.13, 10% 方块 */
+      .pet-arrow {
+        position: absolute;
+        right: 0;
+        top: calc(var(--pet-size, 462px) * -0.13);
+        width: calc(var(--pet-size, 462px) * 0.1);
+        height: calc(var(--pet-size, 462px) * 0.1);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.82);
+        color: #3a3a3a;
+        font-size: calc(var(--pet-size, 462px) * 0.05);
+        line-height: 1;
+        cursor: pointer;
+        pointer-events: auto;
+        z-index: 4;
+        opacity: 0;
+        transition: opacity 0.18s ease;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+      }
+      .pet-sprite:hover .pet-arrow,
+      .pet-arrow:hover {
+        opacity: 1;
+      }
+      /* 隐藏态：宠物本体淡出且不可点，箭头仍保留（唯一恢复入口）。
+         选择器要压过 renderer 给 .pet-stage 写的内联样式（opacity/pointer-events），故用 !important。 */
+      .pet-sprite.is-hidden .pet-stage {
+        opacity: 0 !important;
+        transition: opacity 0.2s ease;
+        pointer-events: none !important;
+      }
+      .pet-sprite.is-hidden .pet-arrow {
+        opacity: 1 !important;
+      }
       .pet-bub-row {
         display: flex;
         justify-content: space-between;

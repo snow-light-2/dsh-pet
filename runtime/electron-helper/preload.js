@@ -25,6 +25,25 @@ contextBridge.exposeInMainWorld('petBridge', {
   openDshSite(url) {
     ipcRenderer.send('pet:open-site', { url });
   },
+  // 右上角箭头：请主进程弹出原生 Harness 菜单（重启 Harness / 安全模式 / 日志 / 检查更新 / 打开网站 / 隐藏桌宠…）
+  openHarnessMenu(payload) {
+    ipcRenderer.send('pet:harness-menu', payload || {});
+  },
+  // 隐藏/显示桌宠的状态登记（主进程据此在窗口重建后恢复隐藏态）
+  setHidden(hidden) {
+    ipcRenderer.send('pet:set-hidden', !!hidden);
+  },
+  onHiddenState(cb) {
+    ipcRenderer.on('pet:hidden-state', (e, hidden) => cb(!!hidden));
+  },
+  // 取一次持久化的隐藏态（窗口重建后恢复用）
+  initHidden() {
+    return ipcRenderer.invoke('pet:get-hidden');
+  },
+  // 来自原生菜单的动作（如「隐藏桌宠」由主进程回推，保证两端状态一致）
+  onHarnessAction(cb) {
+    ipcRenderer.on('pet:harness-action', (e, payload) => cb(payload || {}));
+  },
   // ---- 宠物间碰撞（跨窗 broker）----
   reportFlight(state) {
     ipcRenderer.send('pet:report-flight', state);

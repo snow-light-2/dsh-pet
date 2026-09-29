@@ -78,10 +78,16 @@ async function boot() {
     }
     for (const s of sprites) s.dispose();
     sprites = [new PetSprite(pet)];
+    window.__petSprites = sprites; // 自检/排障用：暴露当前 sprite 实例（隐藏态、菜单等断言）
     window.__dshPetDebug.configOk = true;
     window.__dshPetDebug.spriteCount = sprites.length;
     for (const s of sprites) s.playIdle();
     startLoops();
+    // 隐藏态同步：主进程持久化了「隐藏桌宠」，窗口重建后要按它恢复（并让箭头文案一致）
+    if (window.petBridge.initHidden) {
+      const hidden = await window.petBridge.initHidden();
+      for (const s of sprites) s.setHidden(!!hidden);
+    }
   } catch (e) {
     showError('配置加载失败：' + (e && e.message ? String(e.message) : String(e)));
     scheduleReboot();
@@ -115,6 +121,24 @@ function injectAssets() {
 window.addEventListener('resize', () => {
   for (const s of sprites) s.position();
 });
+
+// 主进程回推的隐藏态（原生菜单里点「隐藏/显示桌宠」）→ 同步本体显隐
+if (window.petBridge && window.petBridge.onHiddenState) {
+  window.petBridge.onHiddenState((hidden) => {
+    for (const s of sprites) s.setHidden(hidden);
+  });
+}
+
+// 主进程回推的 Harness 菜单动作（原生菜单里点「回到初始位置 / 查看余额」）
+if (window.petBridge && window.petBridge.onHarnessAction) {
+  window.petBridge.onHarnessAction((payload) => {
+    const action = payload && payload.action;
+    for (const s of sprites) {
+      if (action === 'home') s.goHome();
+      else if (action === 'balance') s.showBalanceFromMenu();
+    }
+  });
+}
 
 injectAssets();
 void boot();

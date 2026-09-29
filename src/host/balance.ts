@@ -27,9 +27,11 @@ export interface BalanceProvider {
 /** 已知可查询余额的服务商（只登记有公开 API 的；opencode/Zen 暂无官方余额 API，不在此表） */
 export const BALANCE_PROVIDERS: BalanceProvider[] = [
   { ids: ['opencode-go'], ref: 'OPENCODE_GO_API_KEY', kind: 'opencode' },
-  // fork 定制：本机默认模型由 @liustack/modlens 提供，其服务商 id 是 `deepseek-modlens`。
-  // 它同样用 DEEPSEEK_API_KEY 走官方 /user/balance，因此并入同一项定义。
-  { ids: ['deepseek-official', 'deepseek-modlens'], ref: 'DEEPSEEK_API_KEY', kind: 'deepseek' },
+  // fork 定制：
+  // - 旧环境默认模型由 @liustack/modlens 提供，其 provider id 是 `deepseek-modlens`；
+  // - 官方版 DSH Desktop 的默认 provider id 是 `deepseek-account`；
+  // 两者都用 DEEPSEEK_API_KEY 走官方 /user/balance，因此并入同一项定义。
+  { ids: ['deepseek-official', 'deepseek-modlens', 'deepseek-account'], ref: 'DEEPSEEK_API_KEY', kind: 'deepseek' },
 ];
 
 /** provider id → 唯一匹配定义；未匹配返回 undefined（= 不支持查询） */

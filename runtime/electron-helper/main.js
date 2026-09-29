@@ -19,9 +19,10 @@
  * 宿主用与 HTTP 路由同一份 handlePetRoute 应答；素材应答带文件绝对路径，本进程读盘返回。
  * 无 DSH_PET_BRIDGE（手动 start-desktop / 开发流）时保持旧路径：渲染端直接 HTTP 访问宿主。
  */
-const { app, BrowserWindow, ipcMain, screen, shell, protocol } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, shell, protocol, Menu } = require('electron');
 const path = require('node:path');
-const { writeFileSync } = require('node:fs');
+const { writeFileSync, readFileSync } = require('node:fs');
+const { spawn } = require('node:child_process');
 const fsPromises = require('node:fs/promises');
 
 // 允许无用户手势直接播放（余额动画等）
@@ -288,6 +289,62 @@ async function handleBridgeRequest(request) {
   return new Response(resp.body ?? '', { status: resp.status || 200, headers });
 }
 
+/**
+ * 单实例闸门：同一用户下同时只允许一个桌宠助手进程。
+ *
+ * 为什么必须有：助手窗口是「每只宠物一个透明小窗」，一旦有第二个助手进程起来
+ * （宿主重启交叠、诊断/自检脚本、手动 start-desktop 等），屏幕上就会出现两只甚至更多
+ * 一模一样的桌宠。
+ *
+ * 实现用 userData 下的 PID 锁文件（而不是 app.requestSingleInstanceLock）：后者的
+ * `key` 选项依赖较新的 Electron，当前运行时（Electron 43）行为不确定；PID 锁不依赖版本，
+ * 且能识别「上次进程已死」的陈旧锁。自检模式（DSH_PET_SMOKE=1）完全跳过，便于与正式助手并存。
+ */
+function acquireSingleInstanceLock() {
+  if (process.env.DSH_PET_SMOKE === '1') return true;
+  const lockFile = path.join(app.getPath('userData'), 'dsh-pet-helper.lock');
+  const isAlive = (pid) => {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    const existing = Number(JSON.parse(readFileSync(lockFile, 'utf8'))?.pid);
+    if (isAlive(existing) && existing !== process.pid) {
+      console.log('[dsh-pet-desktop-helper] another pet helper is already running (pid ' + existing + '); exiting this instance');
+      return false;
+    }
+  } catch {
+    // 锁文件不存在/损坏/进程已死：继续抢占
+  }
+  try {
+    writeFileSync(lockFile, JSON.stringify({ pid: process.pid, at: Date.now() }), 'utf8');
+  } catch (error) {
+    console.error('[dsh-pet-desktop-helper] lock write failed:', error);
+  }
+  app.on('will-quit', () => {
+    try {
+      const owner = Number(JSON.parse(readFileSync(lockFile, 'utf8'))?.pid);
+      if (owner === process.pid) writeFileSync(lockFile, JSON.stringify({ pid: 0, at: Date.now() }), 'utf8');
+    } catch {
+      // 清理失败不阻塞退出
+    }
+  });
+  return true;
+}
+
+if (!acquireSingleInstanceLock()) {
+  app.exit(0);
+} else {
+  app.on('second-instance', () => {
+    console.log('[dsh-pet-desktop-helper] a second helper launch was blocked by the single-instance lock');
+  });
+}
+
 app.whenReady().then(() => {
   if (BRIDGE) {
     // 自定义 scheme 接住渲染端全部请求（配置/余额/碎碎念/广播/素材）
@@ -388,6 +445,94 @@ app.whenReady().then(() => {
     shell.openExternal(url).catch((error) => {
       console.error('[dsh-pet-desktop-helper] openExternal failed:', error);
     });
+  });
+
+  // 右上角箭头菜单的动作落地：原生菜单项 → 主进程执行（打开网站、重启、日志、隐藏…）。
+  // 菜单用 Electron 原生 Menu.popup —— 宠物窗口是透明小窗，自绘菜单会被窗口边界裁切，
+  // 原生菜单同时获得系统样式与快捷键。
+  const HIDDEN_STATE_FILE = path.join(app.getPath('userData'), 'dsh-pet-helper-hidden.json');
+  let hiddenState = false;
+  try {
+    const raw = readFileSync(HIDDEN_STATE_FILE, 'utf8');
+    hiddenState = JSON.parse(raw)?.hidden === true;
+  } catch {
+    hiddenState = false;
+  }
+  const persistHidden = (flag) => {
+    hiddenState = !!flag;
+    try {
+      writeFileSync(HIDDEN_STATE_FILE, JSON.stringify({ hidden: hiddenState }), 'utf8');
+    } catch (error) {
+      console.error('[dsh-pet-desktop-helper] persist hidden failed:', error);
+    }
+    for (const win of windows.values()) {
+      if (!win.isDestroyed()) win.webContents.send('pet:hidden-state', hiddenState);
+    }
+  };
+
+  /** 请求 Harness 优雅重启（走宿主 IPC 的 shutdown 通道；宿主退出后由桌面应用重新拉起）。 */
+  const requestHarnessRestart = (safeMode) => {
+    const script = path.join(__dirname, 'pet-restart.cjs');
+    const child = spawn(process.execPath, [script], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    });
+    child.on('error', (error) => {
+      console.error('[dsh-pet-desktop-helper] restart spawn failed:', error);
+    });
+    child.unref();
+    if (safeMode) {
+      console.log('[dsh-pet-desktop-helper] restart requested (safe mode flag is informational)');
+    }
+  };
+
+  /** 用系统默认浏览器打开 DSH 网站（当前端口；端口变化随 configUrl 自动跟随）。 */
+  const openSite = (url) => {
+    if (typeof url !== 'string' || !/^https?:[/][/]/.test(url)) return;
+    shell.openExternal(url).catch((error) => {
+      console.error('[dsh-pet-desktop-helper] openExternal failed:', error);
+    });
+  };
+
+  ipcMain.on('pet:harness-menu', (event, payload) => {
+    const data = payload && typeof payload === 'object' ? payload : {};
+    const origin = typeof data.origin === 'string' ? data.origin : '';
+    const template = [
+      { label: '连接手机…', click: () => openSite(origin) },
+      { type: 'separator' },
+      { label: '重启 Harness', click: () => requestHarnessRestart(false) },
+      { label: '以安全模式重启…', click: () => requestHarnessRestart(true) },
+      { label: '显示 Harness 日志', click: () => openSite(origin) },
+      { label: '检查更新…', click: () => openSite('https://dshdesktop.com') },
+      { type: 'separator' },
+      { label: '打开网站', click: () => openSite(origin) },
+      {
+        label: hiddenState ? '显示桌宠' : '隐藏桌宠',
+        click: () => {
+          persistHidden(!hiddenState);
+        },
+      },
+      { type: 'separator' },
+      { label: '回到初始位置', click: () => event.sender.send('pet:harness-action', { action: 'home' }) },
+      { label: '查看余额', click: () => event.sender.send('pet:harness-action', { action: 'balance' }) },
+      { label: '设置…', click: () => openSite(data.origin ? origin + '/?settings=plugins' : origin) },
+    ];
+    const menu = Menu.buildFromTemplate(template);
+    const win = BrowserWindow.fromWebContents(event.sender);
+    menu.popup({ window: win ?? undefined });
+  });
+
+  ipcMain.on('pet:set-hidden', (event, hidden) => {
+    persistHidden(!!hidden);
+  });
+
+  ipcMain.handle('pet:get-hidden', () => hiddenState);
+
+  // 渲染端启动时同步一次隐藏态（窗口重建后按钮文案与本体显隐一致）
+  ipcMain.on('pet:hello', (event) => {
+    event.sender.send('pet:hidden-state', hiddenState);
   });
 
   // 冒烟自检模式（默认关闭）：DSH_PET_SMOKE=1 时延时截图到 DSH_PET_SMOKE_OUT 后退出，
@@ -492,6 +637,41 @@ app.whenReady().then(() => {
             })(),
             videoSrcA: (document.querySelectorAll('.pet-sprite video')[0] || { src: '' }).src,
             videoSrcB: (document.querySelectorAll('.pet-sprite video')[1] || { src: '' }).src,
+            // 箭头自检：小箭头存在、可见（悬停后）、可点，且点击会向主进程请求原生 Harness 菜单
+            arrowSmoke: await (async function () {
+              var arrow = document.querySelector('.pet-arrow');
+              if (!arrow) return { exists: false };
+              var cs = getComputedStyle(arrow);
+              var d = window.__dshPetDebug;
+              var before = d.harnessMenuRequests || 0;
+              arrow.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+              await new Promise(function (r) {
+                setTimeout(r, 120);
+              });
+              return {
+                exists: true,
+                pointerEvents: cs.pointerEvents,
+                width: cs.width,
+                height: cs.height,
+                menuRequests: (d.harnessMenuRequests || 0) - before,
+              };
+            })(),
+            // 隐藏自检：切换隐藏 → 本体淡出、箭头保留；再切回
+            hiddenSmoke: await (async function () {
+              var sprite = document.querySelector('.pet-sprite');
+              if (!sprite) return { exists: false };
+              var el = window.__petSprites && window.__petSprites[0];
+              var stage = sprite.querySelector('.pet-stage');
+              if (!el) return { exists: true, api: false };
+              el.setHidden(true);
+              var hiddenOpacity = getComputedStyle(stage).opacity;
+              var arrowVisibleWhenHidden = getComputedStyle(sprite.querySelector('.pet-arrow')).opacity;
+              var cls = sprite.className.indexOf('is-hidden') >= 0;
+              var stageInline = stage.getAttribute('style') || '';
+              var stageEl = el.stage === stage ? 'same' : 'DIFFERENT';
+              el.setHidden(false);
+              return { exists: true, api: true, stageOpacityWhenHidden: hiddenOpacity, arrowOpacityWhenHidden: arrowVisibleWhenHidden, classApplied: cls, stageInline: stageInline, stageIdentity: stageEl };
+            })(),
             // 右键菜单自检：在命中区派发 contextmenu → 校验菜单挂载/根文案/子面板/运行错误
             menuSmoke: await (async function () {
               // 前面 drag/release/interactive 测试刚拖过宠：justDragged 100ms 内屏蔽右键，

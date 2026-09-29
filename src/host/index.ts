@@ -46,7 +46,7 @@ import { join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
-import { queryBalance } from './balance';
+import { matchBalanceProvider, queryBalance } from './balance';
 import { generateWhisper } from './whisper';
 import { generateChat, type ChatMemoryMessage } from './chat';
 import { findPetInstance, flattenPetList, readAllConfig, saveUserConfig, type ConfigPaths } from './config';
@@ -607,9 +607,18 @@ export function apply(ctx: any): void {
       if (method !== 'GET') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
       try {
         const sel = ctx.agentDefaultModel.currentSelection();
-        const result = await queryBalance(sel.provider, async (ref) => {
-          const rc = await ctx.credentials.resolve(credentialRef(ref));
-          return rc?.value;
+        // 多候选凭据：官方版 DSH 默认 provider 是 deepseek-account，其 key 落在
+        // .credentials.yaml 的 DEEPSEEK_API_KEY（环境变量只作兜底）。逐个尝试直到解析出非空值，
+        // 避免单一 ref 缺失时余额整体不可用；凭证解析始终走 DSH 官方 credentialRef。
+        const keyRefs = [matchBalanceProvider(sel.provider)?.ref, 'DEEPSEEK_API_KEY'].filter(
+          (v, i, a): v is string => Boolean(v) && a.indexOf(v) === i,
+        );
+        const result = await queryBalance(sel.provider, async () => {
+          for (const ref of keyRefs) {
+            const rc = await ctx.credentials.resolve(credentialRef(ref));
+            if (rc?.value) return rc.value;
+          }
+          return undefined;
         });
         return { kind: 'json', status: 200, obj: result };
       } catch (e) {
