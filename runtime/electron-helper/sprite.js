@@ -839,7 +839,8 @@ class PetSprite {
     const py = wy - this.margin.t;
     // 命中区 = 宠物身体 ∪ 右上角箭头（箭头是常驻入口，隐藏宠物后仍可点）
     const overBody = px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
-    this.setInteractive(overBody || this.isOverArrow(px, py));
+    // 箭头已移到应用标题栏：桌宠窗口只以身体命中区参与穿透判定
+    this.setInteractive(overBody);
   }
 
   /** 指针是否落在右上角箭头按钮上（sprite 坐标） */

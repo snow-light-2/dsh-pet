@@ -111,9 +111,10 @@
         white-space: normal;
         overflow-wrap: anywhere;
       }
-      /* 右上角箭头：Harness 菜单入口（原生菜单由主进程弹出，这里只负责可点区域与视觉）。
-         尺寸/位置与 sprite.js 的 arrowSize() 保持同源常量：x = size*0.9, y = -size*0.13, 10% 方块 */
+      /* 桌宠窗口内不再显示箭头：Harness 菜单已移到应用标题栏（原生窗口控件左侧）。
+         这里保留 .pet-arrow 的最小规则（display:none）以兼容旧 DOM，避免影响命中区逻辑。 */
       .pet-arrow {
+        display: none !important;
         position: absolute;
         right: 0;
         top: calc(var(--pet-size, 462px) * -0.13);
