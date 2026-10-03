@@ -514,6 +514,18 @@ app.whenReady().then(() => {
           persistHidden(!hiddenState);
         },
       },
+      {
+        // 退出 = 把浮窗整体藏起来，连那个常驻的小箭头一起：屏幕上立刻干干净净。
+        // 与「隐藏桌宠」的区别：隐藏会保留箭头作为恢复入口（persistHidden 只藏本体），
+        // 退出连入口一起收掉，所以它是**仅本次会话**的 —— 状态不写盘，重启 DSH 后
+        // helper 重建、桌宠照常回来，不会把人锁在外面。
+        label: '退出桌宠（重启 DSH 后恢复）',
+        click: () => {
+          for (const win of windows.values()) {
+            if (!win.isDestroyed()) win.hide();
+          }
+        },
+      },
       { type: 'separator' },
       { label: '回到初始位置', click: () => event.sender.send('pet:harness-action', { action: 'home' }) },
       { label: '查看余额', click: () => event.sender.send('pet:harness-action', { action: 'balance' }) },
