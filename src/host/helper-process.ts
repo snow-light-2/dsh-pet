@@ -12,6 +12,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -276,7 +277,11 @@ export class HelperProcess {
     const args = this.options.args || launch.args;
 
     const child = spawn(command, args, {
-      cwd: this.options.cwd || packageRoot,
+      // cwd 不要放在插件包目录里：Windows 会锁住进程的当前目录，于是
+// node_modules\dsh-pet 永远删不掉 —— pnpm 重装/插件市场装包时就会
+// EPERM: rename ... dsh-pet 直接失败（而且要"关掉 DSH 才能装插件"）。
+// helper 不用 process.cwd()（已确认），所以指到系统临时目录即可。
+      cwd: this.options.cwd || tmpdir(),
       // DSH 桌面宿主用 ELECTRON_RUN_AS_NODE=1 启动 harness（见 dsh-desktop-host 的 env），
       // 该变量会被继承到这里；若不清除，Electron 助手会以**纯 Node** 模式启动并在
       // require('electron') 处崩溃——表现为桌宠窗口永不出现（宿主日志里只有
