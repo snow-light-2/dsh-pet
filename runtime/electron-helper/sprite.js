@@ -889,6 +889,10 @@ class PetSprite {
       { label: '碎碎念', action: 'whisper' },
       { label: '对话', action: 'chat' },
       { label: '回到初始位置', action: 'home' },
+      // 显隐/退出也放进这个菜单：它们原本只在上方箭头的原生菜单里，用户在这里找不到。
+      // 隐藏 = 藏本体、保留箭头（有恢复入口）；退出 = 连箭头一起藏，仅本次会话。
+      { label: this.hidden ? '显示桌宠' : '隐藏桌宠', action: 'toggle-hidden' },
+      { label: '退出桌宠（重启 DSH 后恢复）', action: 'exit-pet' },
     );
     const tree = tools.concat(S.buildMenuTree(this.animations));
     if (!tree.length) return;
@@ -930,6 +934,17 @@ class PetSprite {
     }
     if (leaf.action === 'home') {
       this.goHome(); // 停漫游/移动，清会话位置，回配置角落
+      return;
+    }
+    if (leaf.action === 'toggle-hidden') {
+      // persist: true —— 与箭头菜单的「隐藏桌宠」走同一条登记路径（主进程回推 pet:hidden-state），
+      // 窗口重建后两端文案/显隐一致。
+      this.setHidden(!this.hidden, { persist: true });
+      return;
+    }
+    if (leaf.action === 'exit-pet') {
+      // 仅本次会话：主进程把所有浮窗 hide()，不写盘，重启 DSH 后照常回来。
+      if (window.petBridge && window.petBridge.exitPet) window.petBridge.exitPet();
       return;
     }
     if (!leaf.anim) return;

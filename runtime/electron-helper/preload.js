@@ -33,6 +33,10 @@ contextBridge.exposeInMainWorld('petBridge', {
   setHidden(hidden) {
     ipcRenderer.send('pet:set-hidden', !!hidden);
   },
+  // 右键菜单「退出桌宠（重启 DSH 后恢复）」：把全部浮窗藏起来，仅作用于本次会话
+  exitPet() {
+    ipcRenderer.send('pet:exit');
+  },
   onHiddenState(cb) {
     ipcRenderer.on('pet:hidden-state', (e, hidden) => cb(!!hidden));
   },

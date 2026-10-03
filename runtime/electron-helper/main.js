@@ -520,11 +520,7 @@ app.whenReady().then(() => {
         // 退出连入口一起收掉，所以它是**仅本次会话**的 —— 状态不写盘，重启 DSH 后
         // helper 重建、桌宠照常回来，不会把人锁在外面。
         label: '退出桌宠（重启 DSH 后恢复）',
-        click: () => {
-          for (const win of windows.values()) {
-            if (!win.isDestroyed()) win.hide();
-          }
-        },
+        click: () => hideAllPetWindows(),
       },
       { type: 'separator' },
       { label: '回到初始位置', click: () => event.sender.send('pet:harness-action', { action: 'home' }) },
@@ -536,8 +532,26 @@ app.whenReady().then(() => {
     menu.popup({ window: win ?? undefined });
   });
 
+  /**
+   * 把桌宠的浮窗整体藏起来（连那个常驻的小箭头一起）。
+   *
+   * 「隐藏桌宠」只藏本体、保留箭头作为恢复入口；「退出桌宠」要的是屏幕上什么都没有。
+   * 两个入口（箭头上的原生菜单 + 右键菜单）共用这一份实现。状态**不写盘**：只作用于本次
+   * 会话，重启 DSH 后 helper 重建、桌宠照常回来 —— 持久退出会让人失去所有恢复入口。
+   */
+  const hideAllPetWindows = () => {
+    for (const win of windows.values()) {
+      if (!win.isDestroyed()) win.hide();
+    }
+  };
+
   ipcMain.on('pet:set-hidden', (event, hidden) => {
     persistHidden(!!hidden);
+  });
+
+  // 右键菜单「退出桌宠（重启 DSH 后恢复）」：渲染端经 preload 发过来
+  ipcMain.on('pet:exit', () => {
+    hideAllPetWindows();
   });
 
   ipcMain.handle('pet:get-hidden', () => hiddenState);
