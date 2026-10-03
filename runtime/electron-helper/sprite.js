@@ -893,6 +893,18 @@ class PetSprite {
       // 隐藏 = 藏本体、保留箭头（有恢复入口）；退出 = 连箭头一起藏，仅本次会话。
       { label: this.hidden ? '显示桌宠' : '隐藏桌宠', action: 'toggle-hidden' },
       { label: '退出桌宠（重启 DSH 后恢复）', action: 'exit-pet' },
+      // 箭头平时是隐藏的（Harness 菜单已移到应用标题栏），所以原先只在箭头菜单里的
+      // 桌面动作必须在这里也点得到，否则设置/日志/重启就没了入口。
+      {
+        label: 'Harness',
+        children: [
+          { label: '重启 Harness', action: 'harness-restart' },
+          { label: '以安全模式重启…', action: 'harness-restart-safe' },
+          { label: '显示 Harness 日志', action: 'harness-log' },
+          { label: '检查更新…', action: 'harness-update' },
+          { label: '设置…', action: 'harness-settings' },
+        ],
+      },
     );
     const tree = tools.concat(S.buildMenuTree(this.animations));
     if (!tree.length) return;
@@ -945,6 +957,25 @@ class PetSprite {
     if (leaf.action === 'exit-pet') {
       // 仅本次会话：主进程把所有浮窗 hide()，不写盘，重启 DSH 后照常回来。
       if (window.petBridge && window.petBridge.exitPet) window.petBridge.exitPet();
+      return;
+    }
+    // Harness ▸：重启/安全模式重启走主进程 IPC（与箭头原生菜单同一份实现）；
+    // 日志/更新/设置只是开网页，渲染端直接调 openDshSite，不必绕主进程。
+    if (leaf.action === 'harness-restart' || leaf.action === 'harness-restart-safe') {
+      const command = leaf.action === 'harness-restart' ? 'restart' : 'restart-safe';
+      if (window.petBridge && window.petBridge.harnessCommand) window.petBridge.harnessCommand(command);
+      return;
+    }
+    if (leaf.action === 'harness-log') {
+      if (window.petBridge && window.petBridge.openDshSite) window.petBridge.openDshSite(ORIGIN);
+      return;
+    }
+    if (leaf.action === 'harness-update') {
+      if (window.petBridge && window.petBridge.openDshSite) window.petBridge.openDshSite('https://dshdesktop.com');
+      return;
+    }
+    if (leaf.action === 'harness-settings') {
+      if (window.petBridge && window.petBridge.openDshSite) window.petBridge.openDshSite(ORIGIN + '/?settings=plugins');
       return;
     }
     if (!leaf.anim) return;

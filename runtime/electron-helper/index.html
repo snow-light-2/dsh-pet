@@ -139,7 +139,8 @@
       .pet-arrow:hover {
         opacity: 1;
       }
-      /* 隐藏态：宠物本体淡出且不可点，箭头仍保留（唯一恢复入口）。
+      /* 隐藏态：宠物本体淡出且不可点，箭头此时**才**出现——它是隐藏后唯一的恢复入口。
+         平时箭头保持 display:none（见上），所以桌宠身上是干净的：显隐/退出都走右键菜单。
          选择器要压过 renderer 给 .pet-stage 写的内联样式（opacity/pointer-events），故用 !important。 */
       .pet-sprite.is-hidden .pet-stage {
         opacity: 0 !important;
@@ -147,6 +148,7 @@
         pointer-events: none !important;
       }
       .pet-sprite.is-hidden .pet-arrow {
+        display: flex !important;
         opacity: 1 !important;
       }
       .pet-bub-row {

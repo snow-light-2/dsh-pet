@@ -31,9 +31,12 @@ export interface MenuLeaf {
   anim?: string;
   /** 自定义动作：open-site=打开网站 / show-balance=查看余额；whisper=立即碎碎念一句；
    * chat=打开对话弹窗；home=回到初始位置；toggle-hidden=隐藏/显示桌宠；
-   * exit-pet=退出桌宠（藏掉全部浮窗，含常驻箭头；仅本次会话，重启 DSH 后恢复）。
+   * exit-pet=退出桌宠（藏掉全部浮窗，含常驻箭头；仅本次会话，重启 DSH 后恢复）；
+   * harness-restart / harness-restart-safe / harness-log / harness-update / harness-settings
+   * =「Harness ▸」子菜单里的桌面动作（箭头平时是隐藏的，这些入口必须在右键菜单里）。
    * 手动触发均不受 whisperEnabled 影响（该字段只关自动周期轮询）。
-   * 后两项是桌面外壳专属：由 runtime/electron-helper/sprite.js 注入（网页端没有浮窗可退）。 */
+   * toggle-hidden / exit-pet 与 Harness 系列都是桌面外壳专属：由
+   * runtime/electron-helper/sprite.js 注入（网页端没有浮窗可退、没有主进程可重启）。 */
   action?:
     | 'open-site'
     | 'show-balance'
@@ -41,7 +44,12 @@ export interface MenuLeaf {
     | 'chat'
     | 'home'
     | 'toggle-hidden'
-    | 'exit-pet';
+    | 'exit-pet'
+    | 'harness-restart'
+    | 'harness-restart-safe'
+    | 'harness-log'
+    | 'harness-update'
+    | 'harness-settings';
 }
 
 /** 分支：带子菜单的项 */

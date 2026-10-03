@@ -556,6 +556,14 @@ app.whenReady().then(() => {
 
   ipcMain.handle('pet:get-hidden', () => hiddenState);
 
+  // 右键菜单「Harness ▸」：重启 / 安全模式重启 —— 与箭头原生菜单同一份实现
+  // （日志/更新/设置三项在渲染端直接开网页，不经过主进程）
+  ipcMain.on('pet:harness-command', (event, payload) => {
+    const command = payload && typeof payload === 'object' ? String(payload.command || '') : '';
+    if (command === 'restart') requestHarnessRestart(false);
+    else if (command === 'restart-safe') requestHarnessRestart(true);
+  });
+
   // 渲染端启动时同步一次隐藏态（窗口重建后按钮文案与本体显隐一致）
   ipcMain.on('pet:hello', (event) => {
     event.sender.send('pet:hidden-state', hiddenState);

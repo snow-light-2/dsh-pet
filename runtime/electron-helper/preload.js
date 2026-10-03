@@ -48,6 +48,11 @@ contextBridge.exposeInMainWorld('petBridge', {
   onHarnessAction(cb) {
     ipcRenderer.on('pet:harness-action', (e, payload) => cb(payload || {}));
   },
+  // 右键菜单「Harness ▸」里的桌面动作：restart / restart-safe
+  // （日志/更新/设置不需要主进程，渲染端直接 openDshSite）
+  harnessCommand(command) {
+    ipcRenderer.send('pet:harness-command', { command: String(command || '') });
+  },
   // ---- 宠物间碰撞（跨窗 broker）----
   reportFlight(state) {
     ipcRenderer.send('pet:report-flight', state);
