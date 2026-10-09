@@ -80,29 +80,29 @@ export function makeFactory(): (require: (mod: string) => any) => any {
       }, 'dsh-pet: /pet picker');
 
       // 宠物 overlay（多开：容器渲染多个 PetCard）
-      ctx.slots.inject('shell.overlay', function* () {
-        yield ctx.slots.register({ name: 'shell.overlay', id: 'pet', order: 1000 }, () => h(PetMulti, {}));
-      });
+      ctx.slots.inject('shell.overlay', () =>
+        ctx.slots.register({ name: 'shell.overlay', id: 'pet', order: 1000 }, () => h(PetMulti, {})),
+      );
 
       // 设置页：「桌宠配置」（大小/位置，保存即时生效）
       const PetConfigSection = makePetConfigSection({ h, useState, useEffect, t });
-      ctx.slots.inject('settings.section', function* () {
-        yield ctx.slots.register(
+      ctx.slots.inject('settings.section', () =>
+        ctx.slots.register(
           { name: 'settings.section', id: 'pet-config', order: 30, label: () => t('nav'), inject: () => ({ t }) },
           PetConfigSection,
-        );
-      });
+        ),
+      );
 
       // 应用标题栏的桌宠按钮（会话右上角工具区，与 📁 / ⋯ / ⧉ 同一排）：
       // 桌宠身上不再出现小箭头，显隐/退出/余额这些入口全部收进这个按钮的自绘菜单里。
       // 槽位是**会话级**的（欢迎页不渲染会话头，那时没有按钮）。
       const PetTitlebarMenu = makePetTitlebarMenu({ h, useState, useEffect, useRef, createPortal });
-      ctx.slots.inject('conversation.session.header.utilities', function* () {
-        yield ctx.slots.register(
+      ctx.slots.inject('conversation.session.header.utilities', () =>
+        ctx.slots.register(
           { name: 'conversation.session.header.utilities', id: 'pet-titlebar', order: 40, label: () => '桌宠' },
           PetTitlebarMenu,
-        );
-      });
+        ),
+      );
     }
 
     module.exports = { apply, inject, name };

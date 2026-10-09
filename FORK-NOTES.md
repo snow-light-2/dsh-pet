@@ -150,3 +150,40 @@
    git fetch upstream
    ```
 4. 上游 `package.json` 的 `_comment` 里本来就写明「fork 定制，不随包发布」，本 fork 符合其预期用法。
+
+### 6. 会话标题栏 🐾 不出现：插槽 `inject` 必须用箭头函数（不能是 generator）
+
+**症状**：会话标题栏右侧（官方 📁 图标那一排）看不到桌宠的 🐾 按钮，桌宠本体、右键菜单都正常。
+
+**排查证据**（客户端探针 `E:\deep seek harness\work\gui-real*.js`，走 `__dsh-local-link` 配对后
+用 `executeJavaScript` 读真实 DOM；注意 cookie 是 HttpOnly，curl jar 里带 `#HttpOnly_` 前缀，解析前要剥掉）：
+- 插槽 `conversation.session.header.utilities` **存在**，里面有官方 open-in-app 控件（就是那个 📁）✅；
+- 但 `.dsh-pet-tb-btn` 不存在、`[class*=dsh-pet]` 计数 0 ✗；
+- 控制台只有 `[dsh-pet] 系统通知未启动：connection 服务不可用`、`[dsh-pet] 命令选择框不可用：commandUi 服务缺失`
+  两条降级告警 ⇒ **apply 已经跑过**，问题不在插件加载，而在插槽注册没生效。
+
+**根因**：三处注册写成了 generator 形式
+
+```js
+ctx.slots.inject("conversation.session.header.utilities", function* () {
+  yield ctx.slots.register({ name: "...", id: "pet-titlebar", order: 40 }, PetTitlebarMenu);
+});
+```
+
+generator 的函数体**只有被迭代时才会执行**，外壳不会去 `next()` 它，于是里面的 `register` 从来没被调用，
+注册被静默丢弃。app.asar 里官方插件（open-in-app 等）用的都是箭头函数形式：
+
+```js
+ctx.slots.inject("conversation.session.header.utilities", () =>
+  ctx.slots.register({ name: "...", id: "open-in-app", order: 30 }, Component));
+```
+
+**修复**：`lib/client.js`（三处：`shell.overlay`、`settings.section`、`conversation.session.header.utilities`）
+与 `src/client/app.ts` 对应处全部改成箭头函数直接返回 `ctx.slots.register(...)`。
+`lib/` 是构建产物，必须和 `src/` 一起改（本机没装 tsdown）。
+
+**附带发现**：本版外壳的插槽清单里只有 `settings.launcher` / `settings.trigger`，**没有 `settings.section`**，
+所以桌宠的「设置页配置区块」很可能同样不显示（未验证）。
+
+**验收方式**：客户端 bundle 按内容哈希发版，改完 `lib/client.js` 后要在 GUI 里 **F5 刷新**（或重启 DSH）
+才会拿到新 bundle；刷新后点开会话，标题栏右侧应出现 🐾。
