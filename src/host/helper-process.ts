@@ -253,6 +253,9 @@ export class HelperProcess {
   declare private lastStartAt: number;
   /** stdout 按行缓冲（协议行按 \n 切分）。用 declare + 构造器赋值，避免类字段降级出外部 helper */
   declare private stdoutBuffer: string;
+  /** helper 本地回调服务器地址（首次收到带 cb 的请求行时记住）。
+   *  宿主 → helper 的反向命令（显示/隐藏/退出桌宠…）就 POST 到它的 /command 路由。 */
+  declare private helperCallbackUrl: string;
 
   constructor(options: HelperOptions = {}, logger: Logger = console) {
     this.options = options;
@@ -264,6 +267,37 @@ export class HelperProcess {
     this.restartFailures = 0;
     this.lastStartAt = 0;
     this.stdoutBuffer = '';
+    this.helperCallbackUrl = '';
+  }
+
+  /** 宿主 → helper 的反向命令：POST <helper 回调地址>/command。
+   *  helper 未启动 / 旧版本（请求行不带 cb）时返回 { ok:false, reason:'helper-unavailable' }，
+   *  调用方据此给出「桌宠桌面端没在跑」的提示，不抛错。 */
+  async requestCommand(command: string, timeoutMs = 5000): Promise<Record<string, unknown>> {
+    const cb = this.helperCallbackUrl;
+    if (!cb || !this.child) return { ok: false, reason: 'helper-unavailable' };
+    const url = cb.replace(/\/respond$/, '/command');
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command }),
+        signal: ac.signal,
+      });
+      const text = await res.text();
+      try {
+        const parsed = JSON.parse(text) as Record<string, unknown>;
+        return parsed && typeof parsed === 'object' ? parsed : { ok: false, reason: 'bad-response' };
+      } catch {
+        return { ok: false, reason: 'bad-response', message: text.slice(0, 200) };
+      }
+    } catch (e) {
+      return { ok: false, reason: 'command-failed', message: e instanceof Error ? e.message : String(e) };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   start(): import('node:child_process').ChildProcess | undefined {
@@ -352,6 +386,8 @@ export class HelperProcess {
       return;
     }
     if (typeof req.id !== 'number') return;
+    // 请求行带出的回调地址 = 宿主唯一的反向通道（/command 发命令、/respond 回应答）
+    if (typeof req.cb === 'string' && /^https?:[/][/]/.test(req.cb)) this.helperCallbackUrl = req.cb;
     try {
       // bridgeHandler 返回完整 BridgeResponse（含 id）；异常时兜底 500
       const resp = await this.options.bridgeHandler(req);

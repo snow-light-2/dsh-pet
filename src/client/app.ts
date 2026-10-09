@@ -4,6 +4,7 @@
 import { makePetUI } from './pet';
 import { makePetConfigSection, NS, zh, en, petBridge } from './settings';
 import { startNotify } from './notify';
+import { makePetTitlebarMenu } from './titlebar';
 import type * as ReactNS from 'react';
 
 /**
@@ -18,6 +19,12 @@ export function makeFactory(): (require: (mod: string) => any) => any {
     const react: typeof ReactNS = require('react');
     const { useEffect, useRef, useState } = react;
     const { jsx: h } = require('react/jsx-runtime');
+    // 浮层挂 body 用的 portal（react-dom 与 react 一样由外壳提供，见 tsdown.config.ts 的 CLIENT_EXTERNALS）；
+    // 万一外壳没导出 react-dom 就退化成就地渲染 —— 绝不因为一个可选依赖让整个插件加载失败。
+    let createPortal: ((node: unknown, container: unknown) => unknown) | null = null;
+    try {
+      createPortal = require('react-dom').createPortal ?? null;
+    } catch {}
 
     // 宠物页面（overlay）与配置设置页：组件各自独立文件，这里只组装 + 注册
     const PetMulti = makePetUI({ h, useState, useEffect, useRef });
@@ -83,6 +90,17 @@ export function makeFactory(): (require: (mod: string) => any) => any {
         yield ctx.slots.register(
           { name: 'settings.section', id: 'pet-config', order: 30, label: () => t('nav'), inject: () => ({ t }) },
           PetConfigSection,
+        );
+      });
+
+      // 应用标题栏的桌宠按钮（会话右上角工具区，与 📁 / ⋯ / ⧉ 同一排）：
+      // 桌宠身上不再出现小箭头，显隐/退出/余额这些入口全部收进这个按钮的自绘菜单里。
+      // 槽位是**会话级**的（欢迎页不渲染会话头，那时没有按钮）。
+      const PetTitlebarMenu = makePetTitlebarMenu({ h, useState, useEffect, useRef, createPortal });
+      ctx.slots.inject('conversation.session.header.utilities', function* () {
+        yield ctx.slots.register(
+          { name: 'conversation.session.header.utilities', id: 'pet-titlebar', order: 40, label: () => '桌宠' },
+          PetTitlebarMenu,
         );
       });
     }

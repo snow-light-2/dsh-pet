@@ -602,6 +602,30 @@ export function apply(ctx: any): void {
       };
     }
 
+    // 桌面浮窗控制（应用标题栏的桌宠按钮用）：GET 查隐藏态 / POST 下发命令。
+    // 命令：state | show | hide | toggle | exit | home | balance | restart | restart-safe。
+    // 宿主只做转发（helper 回调服务器的 /command 路由）——窗口显隐与隐藏态持久化只有 helper
+    // 主进程做得到；桌宠桌面端没在跑时如实回 { ok:false, reason:'helper-unavailable' }。
+    if (rest === 'desktop') {
+      if (method !== 'GET' && method !== 'POST') {
+        return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
+      }
+      let command = 'state';
+      if (method === 'POST') {
+        try {
+          const parsed = JSON.parse(body || '{}') as { command?: unknown };
+          command = typeof parsed?.command === 'string' && parsed.command ? parsed.command : 'state';
+        } catch {
+          return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
+        }
+      }
+      const noCache = { 'cache-control': 'no-cache, no-store' }; // 状态要实时：隐藏/显示后按钮文案立刻对
+      if (!helper) {
+        return { kind: 'json', status: 200, obj: { ok: false, reason: 'helper-unavailable' }, headers: noCache };
+      }
+      return { kind: 'json', status: 200, obj: await helper.requestCommand(command), headers: noCache };
+    }
+
     // 余额查询（浏览器/桌面共用；结果由 host 侧完成全部抓取与校验，两端都不接触 key）
     if (rest === 'balance') {
       if (method !== 'GET') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };

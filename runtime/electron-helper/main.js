@@ -203,6 +203,14 @@ let bridgeSeq = 0;
 /** id -> {resolve, reject}：一个请求对应宿主的一次回调应答 */
 const bridgePending = new Map();
 let bridgeCallbackUrl = '';
+/**
+ * 宿主 → 本进程的**反向命令**处理器（app.whenReady 里赋值；返回 JSON 可序列化对象）。
+ * 同一台回调服务器上挂 `/command`：宿主（标题栏按钮 / HTTP 路由）把「显示桌宠 / 隐藏桌宠 /
+ * 退出 / 回到初始位置 / 查看余额 / 状态查询」发过来，这里改状态与窗口显隐。
+ * 为什么走这条回环 HTTP：Electron 主进程在 Windows 上收不到 piped stdin（electron#4218），
+ * 唯一的双向通道就是这条服务器（宿主手里已经有它的地址：请求行的 cb）。
+ */
+let bridgeCommandHandler = null;
 
 /** 渲染端请求 → 宿主（请求行带回调 URL）；返回宿主应答（{status, contentType?, body?, file?}），超时抛错 */
 function bridgeRequest(method, url, body) {
@@ -228,11 +236,13 @@ function bridgeResolve(resp) {
   p.resolve(resp);
 }
 
-/** 本地回调服务器：宿主把应答 POST 到这里（127.0.0.1 随机端口，绕开 stdin/DSH 闸门） */
+/** 本地回调服务器：宿主把应答 POST 到这里（127.0.0.1 随机端口，绕开 stdin/DSH 闸门）
+ *  两条路由：POST /respond = 宿主应答某条请求；POST /command = 宿主下发的反向命令。 */
 function startBridgeCallback() {
   const http = require('node:http');
   const server = http.createServer((req, res) => {
-    if (req.method !== 'POST' || req.url !== '/respond') {
+    const route = req.url;
+    if (req.method !== 'POST' || (route !== '/respond' && route !== '/command')) {
       res.writeHead(404, { 'content-type': 'text/plain' });
       res.end('dsh-pet: not found');
       return;
@@ -240,6 +250,30 @@ function startBridgeCallback() {
     let raw = '';
     req.on('data', (c) => (raw += c));
     req.on('end', () => {
+      if (route === '/command') {
+        void (async () => {
+          let payload = {};
+          try {
+            payload = raw ? JSON.parse(raw) : {};
+          } catch {
+            res.writeHead(400, { 'content-type': 'text/plain' });
+            res.end('dsh-pet: bad payload');
+            return;
+          }
+          try {
+            const result = bridgeCommandHandler
+              ? await bridgeCommandHandler(payload)
+              : { ok: false, reason: 'helper-not-ready' };
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify(result ?? { ok: true }));
+          } catch (e) {
+            console.error('[dsh-pet-desktop-helper] command failed:', String(e && e.message ? e.message : e));
+            res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ ok: false, reason: 'command-error', message: String(e && e.message ? e.message : e) }));
+          }
+        })();
+        return;
+      }
       try {
         bridgeResolve(JSON.parse(raw));
         res.writeHead(200, { 'content-type': 'text/plain' });
@@ -467,6 +501,90 @@ app.whenReady().then(() => {
     }
     for (const win of windows.values()) {
       if (!win.isDestroyed()) win.webContents.send('pet:hidden-state', hiddenState);
+    }
+  };
+
+  /** 桌宠浮窗当前是否可见（窗口级：隐藏/退出都会 hide 掉窗口） */
+  const anyPetWindowVisible = () => {
+    for (const win of windows.values()) {
+      if (!win.isDestroyed() && win.isVisible()) return true;
+    }
+    return false;
+  };
+
+  /** 把桌宠浮窗整体显示回来（「隐藏桌宠 / 退出桌宠」之后的恢复入口） */
+  const showAllPetWindows = () => {
+    for (const win of windows.values()) {
+      if (win.isDestroyed()) continue;
+      if (!win.isVisible()) win.showInactive();
+    }
+  };
+
+  /**
+   * 宿主下发的反向命令（应用标题栏按钮 → host 路由 → 这里）。
+   * 本进程是唯一能同时改「窗口显隐」与「持久化隐藏态」的地方：渲染端只画本体，
+   * 主进程的 hiddenState 才决定重开 DSH 后桌宠回不回来。
+   *   state        查询：{ ok, hidden, visible, pets }
+   *   show         显示桌宠：persistHidden(false) + showInactive（顺带清掉「退出」的窗口级隐藏）
+   *   hide         隐藏桌宠：persistHidden(true) + hide 掉窗口（写盘：重开 DSH 仍是隐藏）
+   *   toggle       按当前状态取反
+   *   exit         退出桌宠：只 hide 窗口、**不写盘**（重开 DSH 就回来）——与右键菜单同一语义
+   *   home/balance 转给渲染端执行（浮窗里的小动作；home 先把桌宠显示出来）
+   *   restart      restart-safe 走宿主重启通道
+   */
+  bridgeCommandHandler = async (payload) => {
+    const command = payload && typeof payload === 'object' ? String(payload.command || 'state') : 'state';
+    const snapshot = () => ({
+      ok: true,
+      command,
+      hidden: hiddenState,
+      visible: anyPetWindowVisible(),
+      pets: windows.size,
+    });
+    switch (command) {
+      case 'state':
+        return snapshot();
+      case 'show':
+        persistHidden(false);
+        showAllPetWindows();
+        return snapshot();
+      case 'hide':
+        persistHidden(true);
+        hideAllPetWindows();
+        return snapshot();
+      case 'toggle':
+        if (hiddenState) {
+          persistHidden(false);
+          showAllPetWindows();
+        } else {
+          persistHidden(true);
+          hideAllPetWindows();
+        }
+        return snapshot();
+      case 'exit':
+        hideAllPetWindows();
+        return snapshot();
+      case 'home':
+      case 'balance': {
+        if (command === 'home') {
+          persistHidden(false);
+          showAllPetWindows();
+        }
+        const target = windows.values().next().value;
+        if (!target || target.isDestroyed()) {
+          return { ok: false, reason: 'no-pet-window', hidden: hiddenState, visible: anyPetWindowVisible() };
+        }
+        target.webContents.send('pet:harness-action', { action: command });
+        return { ...snapshot(), forwarded: command };
+      }
+      case 'restart':
+        requestHarnessRestart(false);
+        return { ok: true, command, restarting: true };
+      case 'restart-safe':
+        requestHarnessRestart(true);
+        return { ok: true, command, restarting: true };
+      default:
+        return { ok: false, reason: 'unknown-command', command };
     }
   };
 

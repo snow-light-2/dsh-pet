@@ -111,8 +111,10 @@
         white-space: normal;
         overflow-wrap: anywhere;
       }
-      /* 桌宠窗口内不再显示箭头：Harness 菜单已移到应用标题栏（原生窗口控件左侧）。
-         这里保留 .pet-arrow 的最小规则（display:none）以兼容旧 DOM，避免影响命中区逻辑。 */
+      /* 桌宠身上永远不出现箭头：显隐/退出/余额等入口已移到**应用标题栏**的桌宠按钮
+         （conversation.session.header.utilities 槽位，由 dsh-pet 客户端半侧注入）。
+         这里保留 .pet-arrow 的最小规则（display:none）以兼容旧 DOM 与冒烟自检
+         （arrowSmoke 仍会对 .pet-arrow 派发一次合成点击，display:none 的元素照样收得到）。 */
       .pet-arrow {
         display: none !important;
         position: absolute;
@@ -120,7 +122,6 @@
         top: calc(var(--pet-size, 462px) * -0.13);
         width: calc(var(--pet-size, 462px) * 0.1);
         height: calc(var(--pet-size, 462px) * 0.1);
-        display: flex;
         align-items: center;
         justify-content: center;
         border-radius: 50%;
@@ -129,27 +130,22 @@
         font-size: calc(var(--pet-size, 462px) * 0.05);
         line-height: 1;
         cursor: pointer;
-        pointer-events: auto;
+        pointer-events: none;
         z-index: 4;
         opacity: 0;
         transition: opacity 0.18s ease;
         box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
       }
-      .pet-sprite:hover .pet-arrow,
-      .pet-arrow:hover {
-        opacity: 1;
-      }
-      /* 隐藏态：宠物本体淡出且不可点，箭头此时**才**出现——它是隐藏后唯一的恢复入口。
-         平时箭头保持 display:none（见上），所以桌宠身上是干净的：显隐/退出都走右键菜单。
-         选择器要压过 renderer 给 .pet-stage 写的内联样式（opacity/pointer-events），故用 !important。 */
+      /* 隐藏态：宠物本体淡出且不可点。**不再**用箭头当恢复入口——恢复入口在应用标题栏，
+         所以这里不给 .pet-arrow 任何 display/opacity 覆盖（否则隐藏后又会出现浮空小箭头）。 */
       .pet-sprite.is-hidden .pet-stage {
         opacity: 0 !important;
         transition: opacity 0.2s ease;
         pointer-events: none !important;
       }
       .pet-sprite.is-hidden .pet-arrow {
-        display: flex !important;
-        opacity: 1 !important;
+        display: none !important;
+        opacity: 0 !important;
       }
       .pet-bub-row {
         display: flex;
