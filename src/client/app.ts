@@ -18,7 +18,10 @@ export function makeFactory(): (require: (mod: string) => any) => any {
 
     const react: typeof ReactNS = require('react');
     const { useEffect, useRef, useState } = react;
-    const { jsx: h } = require('react/jsx-runtime');
+    // 用 createElement 而不是 jsx-runtime 的 jsx：jsx(type, props, key) 的第三参是 key，
+    // 传孩子会被当成 key 丢掉（标题栏菜单因此渲染成空 div，🐾 一直不出现）；
+    // createElement(type, props, …children) 对「变参孩子」和「props.children」两种写法都兼容。
+    const h = react.createElement;
     // 浮层挂 body 用的 portal（react-dom 与 react 一样由外壳提供，见 tsdown.config.ts 的 CLIENT_EXTERNALS）；
     // 万一外壳没导出 react-dom 就退化成就地渲染 —— 绝不因为一个可选依赖让整个插件加载失败。
     let createPortal: ((node: unknown, container: unknown) => unknown) | null = null;

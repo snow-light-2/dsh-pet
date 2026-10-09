@@ -162,24 +162,21 @@
 - 控制台只有 `[dsh-pet] 系统通知未启动：connection 服务不可用`、`[dsh-pet] 命令选择框不可用：commandUi 服务缺失`
   两条降级告警 ⇒ **apply 已经跑过**，问题不在插件加载，而在插槽注册没生效。
 
-**根因**：三处注册写成了 generator 形式
+**根因（两层，第一层曾把我带偏）**：
 
-```js
-ctx.slots.inject("conversation.session.header.utilities", function* () {
-  yield ctx.slots.register({ name: "...", id: "pet-titlebar", order: 40 }, PetTitlebarMenu);
-});
-```
+1. **注册写法不是问题**：`ctx.slots.inject(name, fn)` 既接受箭头函数也接受 generator ——
+   app.asar 里官方自己就有
+   `ctx.slots.inject("sidebar.workspaces.session.menu.item", function* () { yield ctx.slots.register({…}, PinSessionMenuItem); })`。
+   先前把「generator 不被迭代」当成根因是**错的**（那笔改动无害，保留即可）。
+2. **真根因：`h` 是 `react/jsx-runtime` 的 `jsx`，它不吃变参孩子。**
+   `jsx(type, props, key)` 的第三参是 **key**，而 `makePetTitlebarMenu` 里全写成
+   `h('div', { … }, [子节点])` ⇒ 孩子被当成 key 丢掉，组件渲染成一个**空 div**，
+   `.dsh-pet-tb-btn` 自然不存在（插槽在、注册在、DOM 里就是没有按钮）。
+   同文件其它 68 处用的是 `props.children`（对 `jsx` 而言才是正确写法），所以只有这个新组件中招。
 
-generator 的函数体**只有被迭代时才会执行**，外壳不会去 `next()` 它，于是里面的 `register` 从来没被调用，
-注册被静默丢弃。app.asar 里官方插件（open-in-app 等）用的都是箭头函数形式：
-
-```js
-ctx.slots.inject("conversation.session.header.utilities", () =>
-  ctx.slots.register({ name: "...", id: "open-in-app", order: 30 }, Component));
-```
-
-**修复**：`lib/client.js`（三处：`shell.overlay`、`settings.section`、`conversation.session.header.utilities`）
-与 `src/client/app.ts` 对应处全部改成箭头函数直接返回 `ctx.slots.register(...)`。
+**修复**：`src/client/app.ts` 与 `lib/client.js` 都把
+`const { jsx: h } = require('react/jsx-runtime')` 改成 `const h = react.createElement;`
+—— `createElement(type, props, …children)` 对「变参孩子」和「props.children」两种写法都兼容。
 `lib/` 是构建产物，必须和 `src/` 一起改（本机没装 tsdown）。
 
 **附带发现**：本版外壳的插槽清单里只有 `settings.launcher` / `settings.trigger`，**没有 `settings.section`**，
