@@ -62,6 +62,8 @@ if (BRIDGE) {
 
 /** 窗口表：petId -> BrowserWindow */
 const windows = new Map();
+// 出屏兜底日志节流：只在夹取目标变化时写盘（宠物漫游时每帧都会上报窗口位置）
+let lastClampStamp = '';
 
 /**
  * 宠物间碰撞 broker 状态：petId -> { x, y, vx, vy, size, bottomPad }。
@@ -127,6 +129,49 @@ function petWindowSize(size) {
   return { width: Math.round(size) + m * 2, height: Math.round(height + bottomPad) + m * 2 };
 }
 
+/**
+ * 让透明的桌宠窗口在 Windows 软件合成下**真的被画到屏幕上**。
+ *
+ * 背景：本应用在 win32 上 `app.disableHardwareAcceleration()`，因为透明分层窗口在 DWM
+ * 硬件合成下有「拖拽黑边」与「大透明窗盖住小透明窗时内容丢失」两个已知缺陷。
+ * 实测副作用是：窗口创建/位置突变后偶尔不会把自己合成到屏幕 —— 进程在、
+ * `IsWindowVisible` 为真、`PrintWindow` 能抓到完整宠物，但屏幕上什么都没有，
+ * 用户看到的就是「重启后桌宠直接没有了」。这里用三种廉价手段强制一次真实重绘，
+ * 任一生效即可（都失败也无害）：
+ *   1) Chromium 层整页重绘 `webContents.invalidate()`
+ *   2) 分层窗口透明度微抖（0.99 → 1）逼合成器重新取一次表面
+ *   3) 大幅位移再回原位：**实测只有大幅移动才会触发真实合成**，1～2px 的微调无效，
+ *      所以这里按 160px 移动（方向朝画面内侧，避免又被出屏兜底夹一次）
+ */
+function forceRepaint(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    if (typeof win.webContents?.invalidate === 'function') win.webContents.invalidate();
+  } catch {}
+  try {
+    win.setOpacity(0.99);
+    setTimeout(() => {
+      try {
+        if (!win.isDestroyed()) win.setOpacity(1);
+      } catch {}
+    }, 60);
+  } catch {}
+  try {
+    const b = win.getContentBounds();
+    const area = screen.getDisplayNearestPoint({
+      x: b.x + Math.round(b.width / 2),
+      y: b.y + Math.round(b.height / 2),
+    }).workArea;
+    const dx = b.x + 160 + b.width > area.x + area.width ? -160 : 160;
+    win.setContentBounds({ ...b, x: b.x + dx }, false);
+    setTimeout(() => {
+      try {
+        if (!win.isDestroyed()) win.setContentBounds(b, false);
+      } catch {}
+    }, 140);
+  } catch {}
+}
+
 function createPetWindows() {
   const area = screen.getPrimaryDisplay().workArea;
   const configUrl = process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:3080/dsh-pet-7340/config';
@@ -170,7 +215,12 @@ function createPetWindows() {
     // forward:true 保证穿透期间 mousemove 仍转发进渲染端做命中判定。
     win.setIgnoreMouseEvents(true, { forward: true });
     windowIgnore.set(win.id, true);
-    win.once('ready-to-show', () => win.show());
+    win.once('ready-to-show', () => {
+      win.show();
+      // 首次显示后强制重绘一次；再隔 1.2s 补一次（此时渲染端首帧 setBounds 已到位）
+      forceRepaint(win);
+      setTimeout(() => forceRepaint(win), 1200);
+    });
     win.on('closed', () => windows.delete(pet.id));
     win
       .loadFile('index.html', {
@@ -418,7 +468,11 @@ app.whenReady().then(() => {
       x: nx + Math.round(cw / 2),
       y: ny + Math.round(ch / 2),
     }).workArea;
-    const EDGE_INSET = 8;
+    // 边距要**给足**：实测把透明浮窗贴到工作区边缘（哪怕只留 8px）时，
+    // Windows 软件合成会整个丢掉这个窗口的画面 —— 进程在、PrintWindow 有内容、
+    // 屏幕上却什么都没有，正是「重启后桌宠直接没有了」的表现。
+    // 留 120px 后同一位置就能正常显示。
+    const EDGE_INSET = 120;
     let clamped = false;
     if (nx + cw > area.x + area.width - EDGE_INSET) {
       nx = area.x + area.width - EDGE_INSET - cw;
@@ -437,13 +491,18 @@ app.whenReady().then(() => {
       clamped = true;
     }
     if (clamped) {
-      // 只在真的夹取时留一行诊断（宠物正常漫游不会写盘）
-      try {
-        appendFileSync(
-          path.join(app.getPath('temp'), 'dsh-pet-bounds-clamp.log'),
-          `${new Date().toISOString()} 上报 win=${Math.round(x)},${Math.round(y)} ${cw}x${ch} box=${bounds?.boxX},${bounds?.boxY} → 夹到 ${nx},${ny}（工作区 ${area.x},${area.y} ${area.width}x${area.height}）\n`,
-        );
-      } catch {}
+      // 只在「夹取目标发生变化」时留一行诊断：宠物漫游时每帧都上报，
+      // 每帧写盘会把日志灌爆（实测一次启动就几百行）
+      const stamp = `${nx},${ny},${cw},${ch}`;
+      if (stamp !== lastClampStamp) {
+        lastClampStamp = stamp;
+        try {
+          appendFileSync(
+            path.join(app.getPath('temp'), 'dsh-pet-bounds-clamp.log'),
+            `${new Date().toISOString()} 上报 win=${Math.round(x)},${Math.round(y)} ${cw}x${ch} box=${bounds?.boxX},${bounds?.boxY} → 夹到 ${nx},${ny}（工作区 ${area.x},${area.y} ${area.width}x${area.height}）\n`,
+          );
+        } catch {}
+      }
     }
     win.setContentBounds({ x: nx, y: ny, width: cw, height: ch }, false);
     // 碰撞站场：位置必须用**包围盒左上角**（renderer 显式上报 boxX/boxY）——
@@ -554,6 +613,8 @@ app.whenReady().then(() => {
     for (const win of windows.values()) {
       if (win.isDestroyed()) continue;
       if (!win.isVisible()) win.showInactive();
+      // 重新显示后同样补一次强制重绘：透明分层窗口从隐藏态回来时最容易丢合成
+      forceRepaint(win);
     }
   };
 
