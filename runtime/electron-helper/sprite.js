@@ -837,10 +837,15 @@ class PetSprite {
     const wy = Number.isFinite(e.clientY) ? e.clientY : e.screenY - (this.pos.y - this.margin.t);
     const px = wx - this.margin.l;
     const py = wy - this.margin.t;
-    // 命中区 = 宠物身体 ∪ 右上角箭头（箭头是常驻入口，隐藏宠物后仍可点）
+    // 命中区 = 宠物身体 ∪ 右上角箭头（箭头是隐藏后唯一的恢复入口，隐藏时必须能点）。
+    // 箭头只有在隐藏态才会被 CSS 显示（.pet-sprite.is-hidden .pet-arrow），所以也只在隐藏态
+    // 把它算进命中区——可见时它虽然 display:none，但按矩形判定会在宠物上方留一块看不见的
+    // 挡鼠标区域。
+    // 历史 bug：这里只判 overBody（箭头在身体框外，top 为负），隐藏后窗口始终处于穿透态，
+    // 点箭头全被透传到下层应用 → 「隐藏桌宠」变成单向陷阱。
     const overBody = px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
-    // 箭头已移到应用标题栏：桌宠窗口只以身体命中区参与穿透判定
-    this.setInteractive(overBody);
+    const overArrow = this.hidden && this.isOverArrow(px, py);
+    this.setInteractive(overBody || overArrow);
   }
 
   /** 指针是否落在右上角箭头按钮上（sprite 坐标） */
