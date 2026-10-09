@@ -72,6 +72,31 @@
 `pnpm add/install` 里任何重建 `node_modules` 的操作都报
 `[ERR_PNPM_EPERM] rename … node_modules\dsh-pet_tmp_… -> …\dsh-pet`。
 
+### 5. 桌宠窗口出屏兜底（修「重启后桌宠不见了」）
+
+**文件**：`runtime/electron-helper/main.js`（`ipcMain.on('pet:set-bounds')`）、
+`runtime/electron-helper/sprite.js`（构造末尾订阅 `pet:harness-action`）。
+
+**症状**：DSH 重启后桌宠从屏幕上消失，而 `/dsh-pet-7340/desktop` 返回
+`{"ok":true,"hidden":false,"visible":true,"pets":1}`、`PrintWindow` 也能抓到完整的宠物画面
+—— 即**渲染一直是好的，只是窗口被放到了屏幕上不该在的地方**。
+
+**原因**：窗口 = 宠物包围盒 + 四周外扩余量（`margin = size/2 ≈ 231`），配置的
+「右上角」锚点把包围盒放在 `(1221,100)`，于是窗口坐标 = `(990,-131)` —— **顶边跑到屏幕外**。
+这个位置下窗口内容不会被合成到屏幕（实测把窗口挪到屏幕内就立刻可见，挪回去又消失）。
+
+**修法**：`pet:set-bounds` 里不再只钳「包围盒」，而是**钳整个窗口** —— 用
+`screen.getDisplayNearestPoint(窗口中心).workArea` 把窗口四边夹进工作区（`EDGE_INSET = 8`），
+再 `win.setContentBounds({...}, false)`。宠物可见像素只占窗口的一部分（贴图四周有透明留白，
+实测落在窗口右下区），所以必须钳窗口本身。
+
+**顺带**：渲染端此前**从未订阅** `pet:harness-action`（grep 零命中），所以主进程下发的
+「回到初始位置 / 查看余额」是死通道；现在 `sprite.js` 构造末尾把它接到 `onMenuAction`
+（`balance → show-balance`，其余同名转发），标题栏菜单这两项才真的生效。
+
+**排查用**：只有真的发生夹取时才写一行
+`%TEMP%\dsh-pet-bounds-clamp.log`（上报窗口/包围盒/夹取后坐标/工作区），正常漫游不写盘。
+
 ---
 
 ## 为什么要有这个 fork

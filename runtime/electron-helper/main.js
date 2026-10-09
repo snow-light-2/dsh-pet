@@ -21,7 +21,7 @@
  */
 const { app, BrowserWindow, ipcMain, screen, shell, protocol, Menu } = require('electron');
 const path = require('node:path');
-const { writeFileSync, readFileSync } = require('node:fs');
+const { writeFileSync, readFileSync, appendFileSync } = require('node:fs');
 const { spawn } = require('node:child_process');
 const fsPromises = require('node:fs/promises');
 
@@ -405,10 +405,47 @@ app.whenReady().then(() => {
     const width = Number(bounds?.width);
     const height = Number(bounds?.height);
     if (![x, y, width, height].every(Number.isFinite)) return;
-    win.setContentBounds(
-      { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) },
-      false,
-    );
+    // 位置兜底：整个宠物窗口必须留在所在显示器的工作区内。
+    // 背景：窗口 = 宠物包围盒 + 四周外扩余量，而宠物的**可见像素**只占窗口的一部分
+    // （贴图四周有透明留白，实测落在窗口右下区）。所以只钳「包围盒」并不够 ——
+    // 曾经出现过重启后窗口被放到 (990,-131)，宠物实际像素落到屏幕右缘之外，
+    // 渲染完全正常（PrintWindow 能抓到）却「桌宠不见了」。钳窗口本身即可保证宠物有像素在屏内。
+    let nx = Math.round(x);
+    let ny = Math.round(y);
+    const cw = Math.round(width);
+    const ch = Math.round(height);
+    const area = screen.getDisplayNearestPoint({
+      x: nx + Math.round(cw / 2),
+      y: ny + Math.round(ch / 2),
+    }).workArea;
+    const EDGE_INSET = 8;
+    let clamped = false;
+    if (nx + cw > area.x + area.width - EDGE_INSET) {
+      nx = area.x + area.width - EDGE_INSET - cw;
+      clamped = true;
+    }
+    if (ny + ch > area.y + area.height - EDGE_INSET) {
+      ny = area.y + area.height - EDGE_INSET - ch;
+      clamped = true;
+    }
+    if (nx < area.x + EDGE_INSET) {
+      nx = area.x + EDGE_INSET;
+      clamped = true;
+    }
+    if (ny < area.y + EDGE_INSET) {
+      ny = area.y + EDGE_INSET;
+      clamped = true;
+    }
+    if (clamped) {
+      // 只在真的夹取时留一行诊断（宠物正常漫游不会写盘）
+      try {
+        appendFileSync(
+          path.join(app.getPath('temp'), 'dsh-pet-bounds-clamp.log'),
+          `${new Date().toISOString()} 上报 win=${Math.round(x)},${Math.round(y)} ${cw}x${ch} box=${bounds?.boxX},${bounds?.boxY} → 夹到 ${nx},${ny}（工作区 ${area.x},${area.y} ${area.width}x${area.height}）\n`,
+        );
+      } catch {}
+    }
+    win.setContentBounds({ x: nx, y: ny, width: cw, height: ch }, false);
     // 碰撞站场：位置必须用**包围盒左上角**（renderer 显式上报 boxX/boxY）——
     // 窗口坐标 = 包围盒 − margin（半只宠物宽），直接拿窗口坐标会让跨窗检测整体错位
     const petId = [...windows.keys()].find((id) => windows.get(id) === win);

@@ -221,6 +221,18 @@ class PetSprite {
         if (Number.isFinite(vx) && Number.isFinite(vy)) this.onDeskHit(vx, vy);
       });
     }
+
+    // 主进程 → 渲染端 的动作通道（原生 Harness 菜单与插件标题栏菜单共用）：
+    // main.js 用 webContents.send('pet:harness-action', {action}) 下发「回到初始位置 / 查看余额」。
+    // 此前渲染端从未订阅它 —— 菜单点了没反应（回归：本订阅是必需的）。
+    if (window.petBridge && window.petBridge.onHarnessAction) {
+      window.petBridge.onHarnessAction((payload) => {
+        const raw = payload && typeof payload.action === 'string' ? payload.action : '';
+        if (!raw) return;
+        // 主进程侧余额动作叫 'balance'，渲染端菜单里叫 'show-balance'
+        this.onMenuAction({ action: raw === 'balance' ? 'show-balance' : raw });
+      });
+    }
   }
 
   dispose() {
