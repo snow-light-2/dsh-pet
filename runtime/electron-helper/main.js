@@ -127,6 +127,23 @@ function petWindowSize(size) {
   return { width: Math.round(size) + m * 2, height: Math.round(height + bottomPad) + m * 2 };
 }
 
+/**
+ * 逼一次真实合成。透明分层窗口在 Windows 软件合成下会整窗不上屏：进程活着、
+ * IsWindowVisible=true、PrintWindow 也能抓到宠物，但屏幕上就是什么都没有
+ * （用户看到的「桌宠没有了」）。capturePage() 会让合成器产出一帧，实测这一下
+ * 画面就回来了；代价只有几毫秒，失败也不影响任何桌宠逻辑。
+ * 必须是模块级函数：createPetWindows（模块级）与 whenReady 里的显示逻辑都要调它。
+ */
+function kickComposition(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    const shot = win.webContents.capturePage();
+    if (shot && typeof shot.catch === 'function') shot.catch(() => {});
+  } catch {
+    /* 兜底失败忽略 */
+  }
+}
+
 function createPetWindows() {
   const area = screen.getPrimaryDisplay().workArea;
   const configUrl = process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:3080/dsh-pet-7340/config';
@@ -170,7 +187,10 @@ function createPetWindows() {
     // forward:true 保证穿透期间 mousemove 仍转发进渲染端做命中判定。
     win.setIgnoreMouseEvents(true, { forward: true });
     windowIgnore.set(win.id, true);
-    win.once('ready-to-show', () => win.show());
+    win.once('ready-to-show', () => {
+      win.show();
+      kickComposition(win);
+    });
     win.on('closed', () => windows.delete(pet.id));
     win
       .loadFile('index.html', {
@@ -517,8 +537,16 @@ app.whenReady().then(() => {
     for (const win of windows.values()) {
       if (win.isDestroyed()) continue;
       if (!win.isVisible()) win.showInactive();
+      kickComposition(win);
     }
   };
+
+  // 兜底：透明窗口偶发「整窗不上屏」，每分钟逼一帧（几毫秒，不影响动画）
+  setInterval(() => {
+    for (const win of windows.values()) {
+      if (!win.isDestroyed() && win.isVisible()) kickComposition(win);
+    }
+  }, 60000);
 
   /**
    * 宿主下发的反向命令（应用标题栏按钮 → host 路由 → 这里）。

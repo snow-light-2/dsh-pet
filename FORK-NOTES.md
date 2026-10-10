@@ -184,3 +184,30 @@
 
 **验收方式**：客户端 bundle 按内容哈希发版，改完 `lib/client.js` 后要在 GUI 里 **F5 刷新**（或重启 DSH）
 才会拿到新 bundle；刷新后点开会话，标题栏右侧应出现 🐾。
+
+## 7. 透明浮窗「整窗不上屏」兜底（修「桌宠没有了」）
+
+症状：桌宠进程活着、`IsWindowVisible=true`、`PrintWindow` 能抓到宠物画面，
+但屏幕上什么都没有（用户看到的「重启后桌宠直接没有了」「桌宠又没有了」）。
+排查过的死胡同：同位置 `SWP_SHOWWINDOW`、hide + show 循环、`SetLayeredWindowAttributes`
+alpha 抖动、`RedrawWindow(INVALIDATE|UPDATENOW|FRAME)`、`InvalidateRect/UpdateWindow`、
+`webContents.invalidate()`、`setOpacity(0.99)→1`、2px/160px 位移再回原位——都没用。
+
+有用的那一个：**`webContents.capturePage()`**。它会逼合成器产出一帧，实测这一下画面就回来
+（同一份代码用 `DSH_PET_SMOKE=1` 跑时会拍图，那次就是把宠物拍出来了；外部把窗口挪到明显
+不同的位置也有效，属于同类「逼一次合成」）。
+
+落地：`runtime/electron-helper/main.js` 新增模块级 `kickComposition(win)`，调用点：
+1. `win.once('ready-to-show')` 里 `win.show()` 之后；
+2. `showAllPetWindows()` 内每个窗口（标题栏 🐾 →「显示桌宠」/「退出桌宠」之后再点🐾 的恢复路径）；
+3. 每 60 秒兜底一次（几毫秒，不影响动画）。
+
+注意：`kickComposition` 必须是**模块级**函数——`createPetWindows()` 在模块级，而
+`showAllPetWindows()` 在 `app.whenReady()` 里，写成 whenReady 内的 `const` 会让前者 ReferenceError。
+
+另外两处同批修掉的问题：
+- 标题栏 🐾 一直不出现：`makePetTitlebarMenu` 里 `const { jsx: h } = require("react/jsx-runtime")`
+  配 `h('div', {…}, [孩子])` —— `jsx(type, props, key)` 第三参是 key，孩子被丢掉，渲染成空 div。
+  已改成 `react.createElement`（commit `2148aa6`）。
+- 「inject 用 generator 不生效」是错的判断：外壳官方自己就用 `function*` + `yield`
+  （`sidebar.workspaces.session.menu.item`）。箭头函数改动无害、保留。
