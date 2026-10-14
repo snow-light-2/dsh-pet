@@ -66,4 +66,8 @@ contextBridge.exposeInMainWorld('petBridge', {
   onPetHit(cb) {
     ipcRenderer.on('pet:hit', (e, payload) => cb(payload));
   },
+  // 主进程在「外部挪窗」之后回推新位置：renderer 必须认领，否则下一帧就把窗口拽回去
+  onWindowMoved(cb) {
+    ipcRenderer.on('pet:window-moved', (e, payload) => cb(payload || {}));
+  },
 });

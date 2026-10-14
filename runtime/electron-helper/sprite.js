@@ -233,6 +233,27 @@ class PetSprite {
         this.onMenuAction({ action: raw === 'balance' ? 'show-balance' : raw });
       });
     }
+
+    // 主进程「外部挪窗」后的位置认领（Windows 透明分层窗口上屏兜底）：
+    // 主进程用另一个进程大幅挪窗让窗口重新上屏，随后回推新坐标；渲染端必须
+    // 把宠物本体挪到同一个包围盒位置，否则下一帧 sendBounds 就会把窗口拽回原位。
+    if (window.petBridge && window.petBridge.onWindowMoved) {
+      window.petBridge.onWindowMoved((payload) => {
+        const px = Number(payload && payload.boxX);
+        const py = Number(payload && payload.boxY);
+        if (!Number.isFinite(px) || !Number.isFinite(py)) return;
+        this.adoptWindowPosition(px, py);
+      });
+    }
+  }
+
+  /** 认领主进程外部挪窗后的位置：停掉漫游/抛掷，把宠物直接放到该包围盒左上角 */
+  adoptWindowPosition(px, py) {
+    this.stopThrow();
+    this.stopMove();
+    // customPos 语义 = 宠物中心比例（position() 用 rx*W - halfW 还原左上角）
+    this.customPos = { rx: (px + this.halfW) / VIEW.w, ry: (py + this.halfH) / VIEW.h };
+    this.sendBounds(px, py);
   }
 
   dispose() {

@@ -35,10 +35,14 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 // 不影响浏览器形态与主 DSH（独立进程）；非 Windows（macOS/Linux）合成路径不同，保留硬件加速。
 if (process.platform === 'win32') {
   app.disableHardwareAcceleration();
+  // Windows 的「原生遮挡计算」会把桌宠这个顶层浮窗误判成被别的窗口挡住，
+  // 于是渲染进程停止出帧：进程活着、IsWindowVisible=true、PrintWindow 还能
+  // 逼出一张画面，但合成器永远拿不到新帧 —— 屏幕上就是什么都没有
+  //（外部进程大幅挪一下窗口会临时恢复，正是遮挡状态被重置的结果）。
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 }
 
-/** bridge 模式：DSH_PET_BRIDGE=1（宿主注入）。开启时注册 dsh-pet-bridge scheme + 管道转发 */
-const BRIDGE = process.env.DSH_PET_BRIDGE === '1';
+/** bridge 模式：DSH_PET_BRIDGE=1（宿主注入）。开启时注册 dsh-pet-bridge scheme + 管道转发 */const BRIDGE = process.env.DSH_PET_BRIDGE === '1';
 /** 协议行前缀（与 helper-process.ts 的 BRIDGE_PREFIX 一致） */
 const BRIDGE_PREFIX = 'dsh-pet-bridge:';
 
@@ -144,6 +148,112 @@ function kickComposition(win) {
   }
 }
 
+/**
+ * 让浮窗重新「上屏」。
+ *
+ * hide() 之后再 showInactive() 时，窗口级别一切正常（IsWindowVisible=true、
+ * PrintWindow 能抓到宠物），但屏幕上什么都没有。实测只有**重新声明一次
+ * topmost**（等价于外部 SetWindowPos(hwnd, HWND_TOPMOST, …)）才会让这个透明
+ * 分层窗口重新参与合成——capturePage()/invalidate()/opacity 抖动/位移回原位都
+ * 单独救不回来，所以这里两件事一起做。
+ */
+function reassertTopmost(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.setAlwaysOnTop(false);
+    win.setAlwaysOnTop(true, 'screen-saver');
+    win.moveTop();
+  } catch {
+    /* 失败不影响桌宠逻辑 */
+  }
+  kickComposition(win);
+}
+
+// 每个宠物窗口的「包围盒 − 窗口」偏移（margin），外部挪窗后要按它把新位置回推给 renderer
+const petMargins = new Map();
+
+/**
+ * 让「另一个进程」把窗口大幅挪一下。
+ *
+ * 这是这台机器上**唯一**能让这个透明浮窗重新上屏的办法：同进程里的
+ * setBounds / moveTop / invalidate / capturePage / setOpacity 全部无效，
+ * 只有外部进程的一次 SetWindowPos(hwnd, HWND_TOPMOST, 远处坐标, SWP_SHOWWINDOW)
+ * 能让合成器重新出帧（挪完必须留在新位置）。用 -EncodedCommand 传 PowerShell
+ * 脚本，绕开引号拼接问题。
+ */
+function externalNudge(win) {
+  if (process.platform !== 'win32' || !win || win.isDestroyed()) return;
+  try {
+    const buf = win.getNativeWindowHandle();
+    const hwnd = buf.length >= 8 ? Number(buf.readBigUInt64LE(0)) : buf.readUInt32LE(0);
+    const b = win.getBounds();
+    // 跳到一个明显不同的落点（实测位移越大越有效；原地重声明、几十像素的挪动都没用）。
+    // 已经在目标附近时改跳另一个落点，保证这次一定产生足够大的位移。
+    const area = screen.getPrimaryDisplay().workArea;
+    const maxX = area.x + Math.max(0, area.width - b.width);
+    const spotA = { x: Math.min(area.x + 300, maxX), y: area.y + 150 };
+    const spotB = { x: Math.min(area.x + 900, maxX), y: area.y + Math.min(400, Math.max(0, area.height - b.height)) };
+    const near = (p, q) => Math.abs(p.x - q.x) < 400 && Math.abs(p.y - q.y) < 200;
+    const target = near(b, spotA) ? spotB : spotA;
+    const tx = target.x;
+    const ty = target.y;
+    const script =
+      'Add-Type -Namespace PetNudge -Name N -MemberDefinition \'[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int c, int d, uint f);\';' +
+      `[void][PetNudge.N]::SetWindowPos([IntPtr]${hwnd}, [IntPtr](-1), ${tx}, ${ty}, 0, 0, 0x41)`;
+    const enc = Buffer.from(script, 'utf16le').toString('base64');
+    const exe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+    const child = spawn(exe, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-EncodedCommand', enc], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    child.on('error', (err) => nudgeLog(`spawn error: ${err && err.message}`));
+    child.unref();
+    // ★ 关键一步：挪完必须让 renderer 认领这个新位置，否则它下一帧就按自己的
+    //   逻辑位置把窗口拽回去（实测 1.7s 内回到原位），屏幕上等于什么都没发生。
+    //   等外部位移落地后再回推，renderer 的 setContentBounds 就是同值空操作，
+    //   不会再产生一次「真移动」把合成状态弄坏。
+    const m = petMargins.get(win.id) || { mx: 0, my: 0 };
+    setTimeout(() => {
+      if (win.isDestroyed()) return;
+      win.webContents.send('pet:window-moved', { boxX: tx + m.mx, boxY: ty + m.my });
+      nudgeLog(`adopt-sent boxX=${tx + m.mx} boxY=${ty + m.my} margin=${m.mx},${m.my}`);
+    }, 400);
+    nudgeLog(`nudge hwnd=${hwnd} from=${b.x},${b.y} to=${tx},${ty}`);
+  } catch (err) {
+    nudgeLog(`nudge threw: ${err && err.message}`);
+  }
+}
+
+/** 把外部位移的结果写进 %TEMP%\\dsh-pet-nudge.log，便于事后核对是否真的跑了 */
+function nudgeLog(line) {
+  try {
+    writeFileSync(path.join(require('node:os').tmpdir(), 'dsh-pet-nudge.log'), `${new Date().toISOString()} ${line}\n`, { flag: 'a' });
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/**
+ * 启动/显示之后隔几秒再补几次 topmost 重声明。
+ * 实测：外部进程在窗口已经上屏之后调用 `SetWindowPos(hwnd, HWND_TOPMOST, …)`
+ * 能让这个透明分层窗口重新参与合成，而 `ready-to-show` 那一刻的调用太早、
+ * 窗口还没真正被 DWM 合成过 —— 所以这里错开几个时间点各补一次。
+ */
+function scheduleVisibilityKicks(win) {
+  // 只补一次：实测多次外部挪窗会让宠物在屏幕上反复闪现，而且每次挪完
+  // renderer 都会把窗口拽回去，反而更容易掉回「进程在、画面不在」的状态。
+  for (const ms of [2000]) {
+    setTimeout(() => {
+      if (!win.isDestroyed() && win.isVisible()) {
+        reassertTopmost(win);
+        // 同进程的一切手段在这台机器上都无效，必须借「另一个进程」大幅挪窗
+        externalNudge(win);
+      }
+    }, ms);
+  }
+}
+
 function createPetWindows() {
   const area = screen.getPrimaryDisplay().workArea;
   const configUrl = process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:3080/dsh-pet-7340/config';
@@ -189,7 +299,8 @@ function createPetWindows() {
     windowIgnore.set(win.id, true);
     win.once('ready-to-show', () => {
       win.show();
-      kickComposition(win);
+      reassertTopmost(win);
+      scheduleVisibilityKicks(win);
     });
     win.on('closed', () => windows.delete(pet.id));
     win
@@ -425,6 +536,12 @@ app.whenReady().then(() => {
     const width = Number(bounds?.width);
     const height = Number(bounds?.height);
     if (![x, y, width, height].every(Number.isFinite)) return;
+    // 记下窗口↔包围盒的差（margin），externalNudge 挪完窗口要用它告诉 renderer 新位置
+    const mBoxX = Number(bounds?.boxX);
+    const mBoxY = Number(bounds?.boxY);
+    if (Number.isFinite(mBoxX) && Number.isFinite(mBoxY)) {
+      petMargins.set(win.id, { mx: mBoxX - Math.round(x), my: mBoxY - Math.round(y) });
+    }
     win.setContentBounds(
       { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) },
       false,
@@ -532,12 +649,22 @@ app.whenReady().then(() => {
     return false;
   };
 
-  /** 把桌宠浮窗整体显示回来（「隐藏桌宠 / 退出桌宠」之后的恢复入口） */
+  /**
+   * 把桌宠浮窗整体显示回来（「隐藏桌宠 / 退出桌宠」之后的恢复入口）。
+   *
+   * 实测：hide() 之后再 showInactive() 是不够的 —— 窗口级别一切正常
+   * （IsWindowVisible=true、PrintWindow 能抓到宠物），但 Chromium 不再为这个
+   * 分层窗口产出新帧，屏幕上始终什么都没有（用户点「显示桌宠」没反应）。
+   * 逼帧（capturePage）、invalidate、opacity 抖动、位移回原位都救不回来；
+   * 唯一稳定的是**重建窗口**——等价于重新启动一次桌宠（隐藏态已落盘，
+   * 重建后按 hiddenState 决定显隐，位置/配置由渲染端重新拉取）。
+   */
   const showAllPetWindows = () => {
     for (const win of windows.values()) {
       if (win.isDestroyed()) continue;
       if (!win.isVisible()) win.showInactive();
-      kickComposition(win);
+      reassertTopmost(win);
+      scheduleVisibilityKicks(win);
     }
   };
 

@@ -211,3 +211,35 @@ alpha 抖动、`RedrawWindow(INVALIDATE|UPDATENOW|FRAME)`、`InvalidateRect/Upda
   已改成 `react.createElement`（commit `2148aa6`）。
 - 「inject 用 generator 不生效」是错的判断：外壳官方自己就用 `function*` + `yield`
   （`sidebar.workspaces.session.menu.item`）。箭头函数改动无害、保留。
+
+### 8. Windows 合成缺陷：透明浮窗「进程在、屏幕没有」的兜底（2026-10-14）
+
+**症状**：桌宠进程活着、`IsWindowVisible=True`、`DWMWA_CLOAKED=0`、`WS_EX_TOPMOST` 已设、
+`PrintWindow` 能抓到完整宠物画面，但屏幕上**一个像素都没有**。隐藏后再 `show` 也回不来。
+（触发时间点：本机跑过全屏游戏 + ReShade 覆盖层之后开始出现。）
+
+**无效手段**（都单独试过）：同位置/小幅 `SetWindowPos`、`hide()+show()`、`SetLayeredWindowAttributes`、
+`RedrawWindow`、`InvalidateRect/UpdateWindow`、`webContents.invalidate()`、`setOpacity` 抖动、
+销毁窗口重建、重启 helper、去掉 `WS_EX_TRANSPARENT`、去掉 `WS_EX_LAYERED`、打开硬件加速。
+
+**有效手段（唯一）**：**另一个进程**对这个窗口做一次**大幅位移**
+`SetWindowPos(hwnd, HWND_TOPMOST, 远处坐标, SWP_NOSIZE|SWP_SHOWWINDOW)`（几十像素无效，几百像素以上有效）。
+
+**关键第二步（本轮才补上）**：外部位移之后必须让 **renderer 认领新位置**，否则它下一帧
+`sendBounds()` 就按自己的逻辑位置把窗口拽回去（实测 1.7s 内回到原位），屏幕上等于什么都没发生。
+
+实现（`runtime/electron-helper/`）：
+- `main.js` `externalNudge(win)`：`-EncodedCommand` 拉起 `powershell.exe` 做那次位移
+  （落点 A `(300,150)`、落点 B `(900,400)`，两者相距过近时换落点，保证位移足够大），
+  400ms 后 `webContents.send('pet:window-moved', { boxX, boxY })`；每次结果写
+  `%TEMP%\dsh-pet-nudge.log` 便于事后核对。
+- `preload.js` `onWindowMoved(cb)`。
+- `sprite.js` 订阅后调用新增的 `adoptWindowPosition(px, py)`：`stopThrow/stopMove`
+  → 写 `customPos`（宠物中心比例）→ `sendBounds(px, py)`。
+- 调用时机：`ready-to-show` + `showAllPetWindows()`（各一次，`scheduleVisibilityKicks` 2s 后）。
+- 实测：启动后与「隐藏 → 显示桌宠」两条路径都能把宠物放回屏幕上，且 12s 后窗口仍在落点（没被拽回）。
+
+**其它一并留在代码里的防御**：`app.disableHardwareAcceleration()`（Win32 透明分层窗口的已知缺陷）、
+`--disable-features=CalculateNativeWinOcclusion`（原生遮挡计算会误判顶层浮窗并让渲染进程停帧）、
+`kickComposition(win)`（`capturePage()` 逼一帧）、`reassertTopmost(win)`。
+桌宠初始落点边距改为 `marginX/Y = 240`（`E:\dsh-home\dsh-pet\main-config.json`）。
